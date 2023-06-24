@@ -1,0 +1,354 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup QTest-Lite ElasticCache. This should be deployed before "qtest-lite-attachments-lambda" and "qtest-lite-test-runs-lambda" is deployed.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Name of the application. This is used as ClusterName for the ElastiCache.
+    Default: qtest-lite
+
+  PrimaryAvailabilityZone:
+    Description: Primary Availability Zone
+    Type: String
+    Default: 'us-east-1a'
+
+  ReplicaAvailabilityZone1:
+    Description: Replica Availability Zone. We need it since we have more than 1 replicas.
+    Type: String
+    Default: 'us-east-1b'
+
+  ReplicaAvailabilityZone2:
+    Description: Replica Availability Zone.We need it since we have more than 1 replicas.
+    Type: String
+    Default: 'us-east-1c'
+
+  CacheEngine:
+    Type: String
+    Default: 'redis'
+
+  CacheEngineVersion:
+    Type: String
+    Default: '7.0'
+
+  RedisPort:
+    Type: Number
+    Default: '6379'
+
+  usecase:
+    Description: What environment should be deployed
+    Type: String
+    AllowedValues:
+      - 'prod'
+      - 'stage'
+      - 'dev'
+    Default: prod
+
+Mappings:
+  ElasticCacheNode:
+    CacheNodeType:
+      prod: cache.t3.medium
+      stage: cache.t3.small
+      dev: cache.t3.micro
+
+  ElasticCacheReplicaCount:
+    ReplicaCount:
+      prod: '2'
+      stage: '2'
+      dev: '2'
+  # EKS cluster security group to allow communication with ElasticCacheNode (redis)
+  ElasticCacheSecurityGroup:
+    CacheSecurityGroup:
+      prod: 'sg-0bf9a958387660f70'
+      stage: 'sg-08484e177d64ffc88'
+      dev: 'sg-09c9b8d8bb4b3be01'
+Resources:
+  QtestLiteCacheKMS:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: An Qtest Lite (TTM4J) symmetric encryption KMS key for ElasticCache.
+      EnableKeyRotation: true
+      PendingWindowInDays: 20
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  QtestLiteCacheKMSAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub alias/qtest-lite-cache-${usecase}
+      TargetKeyId: !Ref QtestLiteCacheKMS
+  # Subnet group to control where the ElastiCache (Redis) gets placed
+  QtestLiteCacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    DependsOn: QtestLiteElastiCacheLogGroup
+    Properties:
+      CacheSubnetGroupName: !Sub '${ClusterName}-subnetgroup'
+      Description: !Sub '${ClusterName}-ElastiCacheSubnetGroup'
+      SubnetIds:
+        - Fn::ImportValue: !Sub 'PrivateSubnetA-${usecase}'
+        - Fn::ImportValue: !Sub 'PrivateSubnetB-${usecase}'
+        - Fn::ImportValue: !Sub 'PrivateSubnetC-${usecase}'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+  # The ElastiCache itself.
+  QtestLiteReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    # UpdateReplacePolicy: Retain
+    DependsOn: 'QtestLiteParameterGroup'
+    Properties:
+      AutoMinorVersionUpgrade: true
+      CacheNodeType: !FindInMap [ElasticCacheNode, CacheNodeType, !Ref usecase]
+      CacheParameterGroupName: !Ref QtestLiteParameterGroup
+      CacheSubnetGroupName: !Ref QtestLiteCacheSubnetGroup
+      Engine: !Ref CacheEngine
+      EngineVersion: !Ref CacheEngineVersion
+      MultiAZEnabled: true
+      TransitEncryptionEnabled: true
+      AtRestEncryptionEnabled: true
+      # Backup
+      PreferredMaintenanceWindow: sun:23:00-mon:01:30
+      SnapshotRetentionLimit: 7
+      SnapshotWindow: '03:30-05:30'
+      # used to encrypt the disk on the cluster
+      KmsKeyId: !GetAtt  QtestLiteCacheKMS.KeyId
+      # LogDeliveryConfigurations:
+      #   - DestinationDetails:
+      #       CloudWatchLogsDetails:
+      #         LogGroup: !Ref QtestLiteElastiCacheLogGroup
+      #     DestinationType: cloudwatch-logs
+      #     LogFormat: json
+      #     LogType: engine-log
+      NodeGroupConfiguration:
+        - PrimaryAvailabilityZone: !Sub '${PrimaryAvailabilityZone}'
+          ReplicaAvailabilityZones:
+            - !Sub '${ReplicaAvailabilityZone1}'
+            - !Sub '${ReplicaAvailabilityZone2}'
+          ReplicaCount:
+            !FindInMap [ElasticCacheReplicaCount, ReplicaCount, !Ref usecase]
+      Port: !Ref RedisPort
+      ReplicationGroupDescription: !Sub '${ClusterName}-${usecase}-ElastiCache-ReplicationGroup'
+      ReplicationGroupId: !Sub '${ClusterName}-replicationgroup'
+      UserGroupIds:
+        - !Ref QtestLiteElastiCacheUserGroup
+      SecurityGroupIds:
+        - !FindInMap [
+            ElasticCacheSecurityGroup,
+            CacheSecurityGroup,
+            !Ref usecase,
+          ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+  # The ElastiCache dedicated ParameterGroup
+  QtestLiteParameterGroup:
+    Type: 'AWS::ElastiCache::ParameterGroup'
+    UpdateReplacePolicy: Retain
+    Properties:
+      CacheParameterGroupFamily: redis7
+      Description: !Sub '${ClusterName}-ParameterGroup'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+  # Redis Engine logs
+  QtestLiteElastiCacheLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/redis/instance/qtest-lite/${ClusterName}-${usecase}'
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  # ------------------------------------------------------------#
+  # Store ElastiCache User password in SecretsManager
+  # ------------------------------------------------------------#
+  QtestLiteElastiCacheUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      # QtestLite elastic cache authentication
+      Name: qtest-lite-data/qtest-lite-elasticcache
+      Description: 'Secret with dynamically generated password.'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${ClusterName}-${usecase}"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\&'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}
+        - Key: Service
+          Value: qtest-lite-ElastiCache
+        - Key: App
+          Value: TTM4J
+        - Key: Env
+          Value: !Ref usecase
+        - Key: Team
+          Value: il-team
+        - Key: Department
+          Value: Engineering
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+  # ------------------------------------------------------------#
+  # ElastiCache Users and Groups
+  # ------------------------------------------------------------#
+  QtestLiteElastiCacheDefaultUser:
+    Type: AWS::ElastiCache::User
+    Properties:
+      AccessString: "off ~keys* -@all +get" # Since we must have user named "default", we create it but disabling access for it.
+      Engine: redis
+      NoPasswordRequired: false
+      Passwords:
+        - !Sub "{{resolve:secretsmanager:${QtestLiteElastiCacheUserSecret}::password}}"
+      UserId: !Sub ${ClusterName}-default
+      UserName: "default"
+  # We creating the real "Admin" user
+  QtestLiteElastiCacheUser:
+      Type: AWS::ElastiCache::User
+      DependsOn: QtestLiteElastiCacheDefaultUser
+      Properties:
+        AccessString: "on ~* +@all" # Admin access. Allowing all.
+        Engine: redis
+        NoPasswordRequired: false
+        Passwords:
+          - !Sub "{{resolve:secretsmanager:${QtestLiteElastiCacheUserSecret}::password}}"
+        UserId: !Sub "${ClusterName}-${usecase}"
+        UserName: !Sub "{{resolve:secretsmanager:${QtestLiteElastiCacheUserSecret}::username}}"
+
+  QtestLiteElastiCacheUserGroup:
+    DependsOn: QtestLiteElastiCacheUser
+    Type: AWS::ElastiCache::UserGroup
+    Properties:
+      Engine: redis
+      UserGroupId: !Sub ${ClusterName}-${usecase}
+      UserIds:
+        - !Sub "${ClusterName}-default"
+        - !Sub "${ClusterName}-${usecase}"
+
+  # ------------------------------------------------------------#
+  # SSM Parameter Exports
+  # ------------------------------------------------------------#
+  parameterPrimaryEndpointAddress:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: !Sub 'QtestLite ${usecase} ElastiCache PrimaryEndPoint'
+      Name: !Sub '/${usecase}/infrastructure/qtest-lite/redis-PrimaryEndPoint'
+      Type: String
+      Value: !GetAtt QtestLiteReplicationGroup.PrimaryEndPoint.Address
+      Tags:
+        Name: !Sub ${ClusterName}
+        Service: qtest-lite-ElastiCache
+        App: TTM4J
+        Env: !Ref usecase
+        Team: il-team
+        Department: Engineering
+        Region: !Ref 'AWS::Region'
+  parameterReaderEndPointAddress:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: !Sub 'QtestLite ${usecase} ElastiCache ReaderEndPoint'
+      Name: !Sub '/${usecase}/infrastructure/qtest-lite/redis-ReaderEndPoint'
+      Type: String
+      Value: !GetAtt QtestLiteReplicationGroup.ReaderEndPoint.Address
+      Tags:
+        Name: !Sub ${ClusterName}
+        Service: qtest-lite-ElastiCache
+        App: TTM4J
+        Env: !Ref usecase
+        Team: il-team
+        Department: Engineering
+        Region: !Ref 'AWS::Region'
+  parameterQtestLiteCacheSecurityGroupId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: !Sub 'QtestLite ${usecase} ElastiCache CacheSecurityGroupId'
+      Name: !Sub '/${usecase}/infrastructure/qtest-lite/CacheSecurityGroupId'
+      Type: String
+      Value: !FindInMap [ ElasticCacheSecurityGroup, CacheSecurityGroup, !Ref usecase ]
+      Tags:
+        Name: !Sub ${ClusterName}
+        Service: qtest-lite-ElastiCache
+        App: TTM4J
+        Env: !Ref usecase
+        Team: il-team
+        Department: Engineering
+        Region: !Ref 'AWS::Region'
+Outputs:
+  QtestLiteCachePrimaryEndpointAddress:
+    Value: !GetAtt QtestLiteReplicationGroup.PrimaryEndPoint.Address
+
+  QtestLiteCacheReaderEndPointAddress:
+    Value: !GetAtt QtestLiteReplicationGroup.ReaderEndPoint.Address
+
