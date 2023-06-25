@@ -1,0 +1,10 @@
+variable "accesskey" {}
+variable "secretkey" {}
+variable "ami" {}
+variable "instancetype" {}
+variable "image-name" {}
+variable "ec2_volume_type" {}
+variable "ec2_volume_size" {}
+variable "environment" {}
+variable "vpc_id" {}
+variable "subnet_id" {}
