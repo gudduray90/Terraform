@@ -1,0 +1,17 @@
+githubConnection  = "arn:aws:codestar-connections:ap-south-1:597779799530:connection/90f41e2e-e8c2-4c2d-a1aa-b623e6b5a8a0"
+S3Bucket          = "ssoteknocodepipelinenew"
+providerType      = "GitHub"
+accesskey         = "AKIAYWLTT3XVL5FGG3VH"
+secretkey         = "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"
+awsregion         = "ap-south-1"
+codepipeline-name = "Terraform-Codepipeline"
+github-repo       = "gudduray90/javaprogram"
+github-barnch     = "master"
+
+build_projects               = ["sso"]
+project_name                 = "dev-sso-codebuild"
+build_project_source         = "GITHUB"
+builder_compute_type         = "BUILD_GENERAL1_MEDIUM"
+builder_image                = "aws/codebuild/standard:5.0"
+builder_type                 = "LINUX_CONTAINER"
+github_personal_access_token = "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"

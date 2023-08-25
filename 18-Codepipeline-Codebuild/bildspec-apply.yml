@@ -1,0 +1,22 @@
+version: 0.2
+
+env:
+  variables:
+    TF_VERSION: "0.15.5"
+    PERMISSION_SETS_DIR: "permission_sets"
+
+phases:
+  install:
+    commands:
+      - cd /usr/bin
+      - curl -s -qL -o terraform.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
+      - unzip -o terraform.zip
+      - terraform --version
+
+  build:
+    commands:
+    - echo "Build section is running"
+    - echo "Heloo World !!"
+  post_build:
+    commands:
+      - echo "Terraform apply completed on `date`"
